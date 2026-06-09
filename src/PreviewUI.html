@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; padding: 16px; color: #333; }
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    h1 { font-size: 20px; font-weight: 600; }
+    .btn { padding: 8px 20px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; }
+    .btn-primary { background: #1a73e8; color: #fff; }
+    .btn-primary:disabled { background: #a8c7fa; cursor: not-allowed; }
+    .btn-secondary { background: #e8eaed; color: #333; }
+    .btn-success { background: #34a853; color: #fff; }
+    .btn-danger { background: #ea4335; color: #fff; }
+    .file-list { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .file-item { display: flex; align-items: center; padding: 8px 0; border-bottom: 1px solid #eee; }
+    .file-item:last-child { border-bottom: none; }
+    .file-item label { margin-left: 8px; cursor: pointer; flex: 1; }
+    .file-size { color: #888; font-size: 12px; margin-left: 8px; }
+    .status-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; margin-left: 8px; }
+    .badge-auto { background: #e6f4ea; color: #137333; }
+    .badge-review { background: #fef7e0; color: #b06000; }
+    .badge-error { background: #fce8e6; color: #c5221f; }
+    .preview-table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    .preview-table th { background: #f8f9fa; text-align: left; padding: 8px; font-size: 12px; font-weight: 600; color: #555; border-bottom: 2px solid #ddd; }
+    .preview-table td { padding: 6px 8px; border-bottom: 1px solid #eee; font-size: 13px; vertical-align: middle; }
+    .preview-table input, .preview-table select { width: 100%; padding: 4px 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
+    .preview-table input:focus, .preview-table select:focus { outline: 2px solid #1a73e8; outline-offset: -1px; border-color: transparent; }
+    .file-section { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .file-section h3 { font-size: 14px; margin-bottom: 8px; }
+    .loading { text-align: center; padding: 40px; color: #888; }
+    .spinner { border: 3px solid #eee; border-top: 3px solid #1a73e8; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; margin: 0 auto 12px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+    .summary { background: #e8f0fe; border-radius: 8px; padding: 12px; margin-bottom: 12px; font-size: 13px; }
+    .summary strong { color: #1a73e8; }
+    .error-text { color: #c5221f; font-size: 12px; margin-top: 4px; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Process Uploads</h1>
+    <div>
+      <button class="btn btn-secondary" onclick="google.script.host.close()">Close</button>
+    </div>
+  </div>
+
+  <div id="step-select">
+    <div class="file-list" id="file-list-container">
+      <div class="loading"><div class="spinner"></div>Loading files...</div>
+    </div>
+    <div class="toolbar">
+      <button class="btn btn-primary" id="btn-parse" onclick="parseSelected()" disabled>Parse with Gemini</button>
+      <span id="select-msg" style="font-size:12px;color:#888;"></span>
+    </div>
+  </div>
+
+  <div id="step-preview" class="hidden">
+    <div class="summary" id="summary-bar"></div>
+    <div id="preview-container"></div>
+    <div class="toolbar" style="margin-top:16px;">
+      <button class="btn btn-secondary" onclick="backToSelect()">&larr; Back</button>
+      <button class="btn btn-success" id="btn-confirm" onclick="confirmAll()">Confirm &amp; Save</button>
+    </div>
+  </div>
+
+  <div id="step-done" class="hidden">
+    <div class="file-list" style="text-align:center;padding:40px;">
+      <div style="font-size:48px;margin-bottom:12px;">&#10004;&#65039;</div>
+      <h2 id="done-msg">Saved successfully!</h2>
+      <p style="color:#888;margin-top:8px;" id="done-detail"></p>
+      <button class="btn btn-primary" style="margin-top:20px;" onclick="backToSelect()">Process More Files</button>
+      <button class="btn btn-secondary" style="margin-top:20px;" onclick="google.script.host.close()">Close</button>
+    </div>
+  </div>
+
+  <script>
+    var allFiles = [];
+    var allLookup = [];
+    var processedData = {};
+
+    google.script.run
+      .withSuccessHandler(function(files) {
+        allFiles = files;
+        renderFileList();
+      })
+      .withFailureHandler(function(err) {
+        document.getElementById('file-list-container').innerHTML =
+          '<div class="error-text">Error loading files: ' + err + '</div>';
+      })
+      .getFilesForPicker();
+
+    google.script.run
+      .withSuccessHandler(function(lookup) {
+        allLookup = lookup;
+      })
+      .getLookupNames();
+
+    function escapeAttr(s) {
+      return s.toString().replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+
+    function renderFileList() {
+      var container = document.getElementById('file-list-container');
+      if (!allFiles.length) {
+        container.innerHTML = '<div style="padding:20px;text-align:center;color:#888;">No unprocessed files found in the Drive folder.</div>';
+        return;
+      }
+      var html = '<div style="font-size:13px;color:#555;margin-bottom:8px;">' +
+                 '<label><input type="checkbox" onchange="toggleAll(this)" checked> Select all (' + allFiles.length + ' files)</label></div>';
+      for (var i = 0; i < allFiles.length; i++) {
+        var f = allFiles[i];
+        var sizeLabel = f.size > 1048576 ? (f.size / 1048576).toFixed(1) + ' MB' : (f.size / 1024).toFixed(0) + ' KB';
+        html += '<div class="file-item">' +
+                '<input type="checkbox" class="file-check" value="' + i + '" checked onchange="updateParseBtn()">' +
+                '<label onclick="this.previousElementSibling.click();updateParseBtn()">' + escapeAttr(f.name) + ' <span class="file-size">(' + sizeLabel + ')</span></label>' +
+                '</div>';
+      }
+      container.innerHTML = html;
+      updateParseBtn();
+    }
+
+    function toggleAll(master) {
+      var checks = document.querySelectorAll('.file-check');
+      for (var i = 0; i < checks.length; i++) {
+        checks[i].checked = master.checked;
+      }
+      updateParseBtn();
+    }
+
+    function updateParseBtn() {
+      var checks = document.querySelectorAll('.file-check:checked');
+      var btn = document.getElementById('btn-parse');
+      btn.disabled = checks.length === 0;
+      document.getElementById('select-msg').textContent = checks.length ? checks.length + ' file(s) selected' : '';
+    }
+
+    function parseSelected() {
+      var checks = document.querySelectorAll('.file-check:checked');
+      var files = [];
+      for (var i = 0; i < checks.length; i++) {
+        files.push(allFiles[parseInt(checks[i].value)]);
+      }
+
+      document.getElementById('step-select').classList.add('hidden');
+      document.getElementById('step-preview').classList.remove('hidden');
+      document.getElementById('preview-container').innerHTML =
+        '<div class="loading"><div class="spinner"></div>Parsing with Gemini...</div>';
+
+      parseNextFile(files, 0, {});
+    }
+
+    function parseNextFile(files, index, results) {
+      if (index >= files.length) {
+        renderPreview(results);
+        return;
+      }
+
+      var f = files[index];
+      if (index === 0) {
+        document.getElementById('preview-container').innerHTML = '';
+      }
+      var section = document.createElement('div');
+      section.className = 'file-section';
+      section.id = 'section-' + index;
+      section.innerHTML = '<h3>' + escapeAttr(f.name) + '</h3><div class="loading"><div class="spinner"></div>Parsing...</div>';
+      document.getElementById('preview-container').appendChild(section);
+
+      google.script.run
+        .withSuccessHandler(function(records) {
+          results[f.name] = { records: records, file: f };
+          parseNextFile(files, index + 1, results);
+        })
+        .withFailureHandler(function(err) {
+          results[f.name] = { records: [], file: f, error: err };
+          parseNextFile(files, index + 1, results);
+        })
+        .processFileWithGemini(f.id, f.name);
+    }
+
+    function renderPreview(results) {
+      var container = document.getElementById('preview-container');
+      container.innerHTML = '';
+
+      var totalRecords = 0;
+      var totalAuto = 0;
+      var totalReview = 0;
+      var totalError = 0;
+
+      var fileNames = Object.keys(results);
+      for (var fi = 0; fi < fileNames.length; fi++) {
+        var fn = fileNames[fi];
+        var data = results[fn];
+        var records = data.records || [];
+
+        if (data.error) {
+          totalError++;
+        }
+
+        var sec = document.createElement('div');
+        sec.className = 'file-section';
+
+        var autoCount = 0, reviewCount = 0, notFoundCount = 0;
+        for (var r = 0; r < records.length; r++) {
+          if (records[r].match_status === 'auto') autoCount++;
+          else if (records[r].match_status === 'review') reviewCount++;
+          else notFoundCount++;
+        }
+        totalAuto += autoCount;
+        totalReview += reviewCount + notFoundCount;
+        totalRecords += records.length;
+
+        var statusHtml = data.error
+          ? '<span class="status-badge badge-error">ERROR</span>'
+          : '<span class="status-badge badge-auto">' + records.length + ' records</span>' +
+            ((reviewCount || notFoundCount) ? ' <span class="status-badge badge-review">' + (reviewCount + notFoundCount) + ' needs review</span>' : '');
+
+        var html = '<h3>' + escapeAttr(fn) + ' ' + statusHtml + '</h3>';
+
+        if (data.error) {
+          html += '<div class="error-text">' + escapeAttr(data.error) + '</div>';
+        } else if (records.length) {
+          html += '<table class="preview-table">' +
+                  '<thead><tr><th>Date</th><th>Event</th><th>Volunteer Name</th><th>Hours</th><th>Status</th></tr></thead><tbody>';
+
+          for (var r = 0; r < records.length; r++) {
+            var rec = records[r];
+            var rowId = 'r_' + fi + '_' + r;
+            var candidates = rec.match_candidates || [];
+            var nameCell = '';
+
+            if (candidates.length > 1) {
+              nameCell = '<select id="' + rowId + '_name" class="name-sel" data-fi="' + fi + '" data-row="' + r + '">';
+              for (var c = 0; c < candidates.length; c++) {
+                var sel = candidates[c] === rec.matched_name ? ' selected' : '';
+                nameCell += '<option value="' + escapeAttr(candidates[c]) + '"' + sel + '>' + escapeAttr(candidates[c]) + '</option>';
+              }
+              var hasOrig = false;
+              for (var c = 0; c < candidates.length; c++) {
+                if (candidates[c] === rec.volunteer_name) hasOrig = true;
+              }
+              if (!hasOrig) {
+                nameCell += '<option value="' + escapeAttr(rec.volunteer_name) + '">' + escapeAttr(rec.volunteer_name) + ' (original)</option>';
+              }
+              nameCell += '</select>';
+            } else if (candidates.length === 1) {
+              nameCell = '<input type="text" id="' + rowId + '_name" class="name-inp" data-fi="' + fi + '" data-row="' + r + '" value="' + escapeAttr(rec.matched_name) + '">';
+            } else {
+              nameCell = '<select id="' + rowId + '_name" class="name-sel" data-fi="' + fi + '" data-row="' + r + '">';
+              nameCell += '<option value="">\u2014 Select \u2014</option>';
+              for (var l = 0; l < allLookup.length; l++) {
+                nameCell += '<option value="' + escapeAttr(allLookup[l].combined_name) + '">' + escapeAttr(allLookup[l].combined_name) + '</option>';
+              }
+              nameCell += '<option value="' + escapeAttr(rec.volunteer_name) + '">' + escapeAttr(rec.volunteer_name) + ' (original)</option>';
+              nameCell += '</select>';
+            }
+
+            var badge = rec.match_status === 'auto'
+              ? '<span class="status-badge badge-auto">&#10003;</span>'
+              : rec.match_status === 'review'
+                ? '<span class="status-badge badge-review">&#9888;</span>'
+                : '<span class="status-badge badge-error">?</span>';
+
+            html += '<tr>' +
+                    '<td><input type="text" id="' + rowId + '_date" class="date-inp" data-fi="' + fi + '" data-row="' + r + '" value="' + escapeAttr(rec.date) + '"></td>' +
+                    '<td><input type="text" id="' + rowId + '_event" class="event-inp" data-fi="' + fi + '" data-row="' + r + '" value="' + escapeAttr(rec.event_name) + '"></td>' +
+                    '<td>' + nameCell + '</td>' +
+                    '<td><input type="text" id="' + rowId + '_hours" class="hours-inp" data-fi="' + fi + '" data-row="' + r + '" value="' + rec.hours + '"></td>' +
+                    '<td>' + badge + '</td>' +
+                    '</tr>';
+          }
+          html += '</tbody></table>';
+        } else {
+          html += '<div style="color:#888;font-size:13px;">No records extracted from this file.</div>';
+        }
+
+        sec.innerHTML = html;
+        container.appendChild(sec);
+      }
+
+      var summary = document.getElementById('summary-bar');
+      var parts = [];
+      if (totalRecords) parts.push(totalRecords + ' total records');
+      if (totalAuto) parts.push('<strong>' + totalAuto + ' auto-matched</strong>');
+      if (totalReview) parts.push('<span style="color:#b06000;">' + totalReview + ' needs review</span>');
+      if (totalError) parts.push('<span style="color:#c5221f;">' + totalError + ' file errors</span>');
+      summary.innerHTML = parts.join(' \u00b7 ');
+
+      processedData = results;
+    }
+
+    function backToSelect() {
+      document.getElementById('step-select').classList.remove('hidden');
+      document.getElementById('step-preview').classList.add('hidden');
+      document.getElementById('step-done').classList.add('hidden');
+      document.getElementById('btn-parse').disabled = true;
+      document.getElementById('select-msg').textContent = '';
+      google.script.run
+        .withSuccessHandler(function(files) {
+          allFiles = files;
+          renderFileList();
+        })
+        .getFilesForPicker();
+    }
+
+    function confirmAll() {
+      var btn = document.getElementById('btn-confirm');
+      btn.disabled = true;
+      btn.textContent = 'Saving...';
+
+      var fileNames = Object.keys(processedData);
+      var totalWritten = 0;
+      var errors = [];
+
+      function saveNextFile(idx) {
+        if (idx >= fileNames.length) {
+          document.getElementById('step-preview').classList.add('hidden');
+          document.getElementById('step-done').classList.remove('hidden');
+          var detail = totalWritten + ' records written';
+          if (errors.length) detail += ', ' + errors.length + ' file(s) had errors';
+          document.getElementById('done-msg').textContent = 'Saved successfully!';
+          document.getElementById('done-detail').textContent = detail;
+          return;
+        }
+
+        var fn = fileNames[idx];
+        var data = processedData[fn];
+        if (data.error || !data.records.length) {
+          saveNextFile(idx + 1);
+          return;
+        }
+
+        var records = [];
+        for (var r = 0; r < data.records.length; r++) {
+          var fi = fileNames.indexOf(fn);
+          var dateEl = document.getElementById('r_' + fi + '_' + r + '_date');
+          var eventEl = document.getElementById('r_' + fi + '_' + r + '_event');
+          var nameSel = document.getElementById('r_' + fi + '_' + r + '_name');
+          var hoursEl = document.getElementById('r_' + fi + '_' + r + '_hours');
+
+          records.push({
+            date: dateEl ? dateEl.value : data.records[r].date,
+            event_name: eventEl ? eventEl.value : data.records[r].event_name,
+            volunteer_name: nameSel ? nameSel.value : data.records[r].volunteer_name,
+            hours: parseFloat(hoursEl ? hoursEl.value : data.records[r].hours) || 0,
+          });
+        }
+
+        google.script.run
+          .withSuccessHandler(function(result) {
+            if (result.success) {
+              totalWritten += result.records_written;
+            } else {
+              errors.push(fn + ': ' + result.error);
+            }
+            saveNextFile(idx + 1);
+          })
+          .withFailureHandler(function(err) {
+            errors.push(fn + ': ' + err);
+            saveNextFile(idx + 1);
+          })
+          .confirmRecords(fn, records);
+      }
+
+      saveNextFile(0);
+    }
+  </script>
+</body>
+</html>
