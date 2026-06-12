@@ -6,6 +6,7 @@ var SYSTEM_PROMPT = [
   '- Class / grade / form columns',
   '- Teacher or staff names',
   '- Parent contact information',
+  '- The word \'activity\' — it is never a volunteer name or event name',
   '',
   'Extract these fields for each volunteer entry:',
   '',
@@ -42,13 +43,12 @@ function parseFile(fileId, fileName) {
       { inline_data: { mime_type: mime, data: base64 } },
       { text: 'Extract all volunteer records from this file as a JSON array.' },
     ];
+  } else if (isExcelFile(fileName)) {
+    var textData = readExcelAsText(fileId, fileName);
+    parts = [{ text: 'Here is the content of an Excel spreadsheet:\n\n' + textData + '\n\nExtract all volunteer records from this data as a JSON array.' }];
   } else {
-    var pdfBlob = convertExcelToPdfBlob(fileId);
-    var base64 = Utilities.base64Encode(pdfBlob.getBytes());
-    parts = [
-      { inline_data: { mime_type: 'application/pdf', data: base64 } },
-      { text: 'Extract all volunteer records from this file as a JSON array.' },
-    ];
+    var textData = readCsvAsText(fileId, fileName);
+    parts = [{ text: 'Here is the content of a CSV file:\n\n' + textData + '\n\nExtract all volunteer records from this data as a JSON array.' }];
   }
 
   var body = {
@@ -58,6 +58,8 @@ function parseFile(fileId, fileName) {
 
   var model = GEMINI_MODEL;
   var lastError;
+
+  trace(fileName, 'gemini_parse', 'INFO', 'Starting Gemini parse with model ' + model);
 
   for (var attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -76,11 +78,13 @@ function parseFile(fileId, fileName) {
       var code = response.getResponseCode();
 
       if (code === 200) {
-        return parseGeminiResponse(response.getContentText());
+        trace(fileName, 'gemini_parse', 'SUCCESS', 'API response received');
+        return parseGeminiResponse(response.getContentText(), fileName);
       }
 
       if (code === 429 || code === 503) {
         lastError = 'HTTP ' + code;
+        trace(fileName, 'gemini_parse', 'WARN', 'Attempt ' + attempt + ': ' + lastError + ' — retrying');
         if (attempt < MAX_RETRIES) {
           Utilities.sleep(RETRY_DELAY_MS * attempt);
           continue;
@@ -89,6 +93,7 @@ function parseFile(fileId, fileName) {
 
       if (code === 404 && model !== GEMINI_MODEL_FALLBACK) {
         model = GEMINI_MODEL_FALLBACK;
+        trace(fileName, 'gemini_parse', 'WARN', 'Model 404, switching to ' + model);
         attempt--;
         continue;
       }
@@ -98,6 +103,7 @@ function parseFile(fileId, fileName) {
     } catch (e) {
       if (e.toString().indexOf('Timeout') !== -1 && attempt < MAX_RETRIES) {
         lastError = 'timeout';
+        trace(fileName, 'gemini_parse', 'WARN', 'Attempt ' + attempt + ': timeout — retrying');
         Utilities.sleep(RETRY_DELAY_MS * attempt);
         continue;
       }
@@ -105,10 +111,11 @@ function parseFile(fileId, fileName) {
     }
   }
 
+  trace(fileName, 'gemini_parse', 'ERROR', 'Failed after ' + MAX_RETRIES + ' attempts: ' + lastError);
   throw new Error('Gemini API failed after ' + MAX_RETRIES + ' attempts: ' + lastError);
 }
 
-function parseGeminiResponse(responseText) {
+function parseGeminiResponse(responseText, fileName) {
   var data = JSON.parse(responseText);
   var text;
 
@@ -120,6 +127,10 @@ function parseGeminiResponse(responseText) {
 
   text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
 
+  trace(fileName, 'gemini_parse', 'INFO', 'Raw Gemini response', { raw_text: text.slice(0, 2000) });
+
+  text = text.replace(/,\s*([}\]])/g, '$1');
+
   var items = JSON.parse(text);
   if (!Array.isArray(items)) {
     throw new Error('Gemini did not return an array: ' + text.slice(0, 200));
@@ -128,19 +139,18 @@ function parseGeminiResponse(responseText) {
   var records = [];
   for (var i = 0; i < items.length; i++) {
     var item = items[i];
-    var dt = item.date || '';
-    if (typeof dt !== 'string') continue;
-
+    var dt = (item.date || '').toString().trim();
     var parsed = new Date(dt);
-    if (isNaN(parsed.getTime())) continue;
 
     records.push({
-      date: Utilities.formatDate(parsed, 'Asia/Singapore', 'yyyy-MM-dd'),
-      event_name: (item.event_name || '').toString(),
-      volunteer_name: (item.volunteer_name || '').toString(),
+      date: !isNaN(parsed.getTime()) ? Utilities.formatDate(parsed, 'Asia/Singapore', 'yyyy-MM-dd') : dt || '',
+      event_name: (item.event_name || '').toString().trim(),
+      volunteer_name: (item.volunteer_name || '').toString().trim(),
       hours: parseFloat(item.hours) || 0,
     });
   }
+
+  trace(fileName, 'gemini_parse', 'INFO', 'Parsed ' + records.length + ' records from Gemini', { total_raw: items.length });
 
   return records;
 }

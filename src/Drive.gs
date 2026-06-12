@@ -13,18 +13,20 @@ function listUnprocessedFiles() {
     }
   }
 
+  var processedIds = {};
   var processedIter = folder.getFoldersByName(PROCESSED_FOLDER_NAME);
   if (processedIter.hasNext()) {
     var processedFolder = processedIter.next();
-    var processedIds = {};
     var pfIter = processedFolder.getFiles();
     while (pfIter.hasNext()) {
-      processedIds[pfIter.next().getName()] = true;
+      var pf = pfIter.next();
+      processedIds[pf.getId()] = true;
     }
-    files = files.filter(function (f) { return !processedIds[f.name]; });
+    files = files.filter(function (f) { return !processedIds[f.id]; });
   }
 
   files.sort(function (a, b) { return a.name.localeCompare(b.name); });
+  trace('', 'file_discovery', 'INFO', 'Found ' + files.length + ' unprocessed files', { total_supported: files.length });
   return files;
 }
 
@@ -32,9 +34,23 @@ function getFileBlob(fileId) {
   return DriveApp.getFileById(fileId).getBlob();
 }
 
-function convertExcelToPdfBlob(fileId) {
+function readExcelAsText(fileId, fileName) {
   var file = DriveApp.getFileById(fileId);
-  return file.getAs('application/pdf');
+  var blob = file.getBlob();
+  var resource = { title: '_temp_psg_' + fileName, mimeType: MimeType.GOOGLE_SHEETS };
+  var newFile = Drive.Files.insert(resource, blob, { convert: true });
+  try {
+    var ss = SpreadsheetApp.openById(newFile.id);
+    var sheet = ss.getSheets()[0];
+    var data = sheet.getDataRange().getValues();
+    return data.map(function(row) { return row.join('\t'); }).join('\n');
+  } finally {
+    Drive.Files.remove(newFile.id);
+  }
+}
+
+function readCsvAsText(fileId, fileName) {
+  return DriveApp.getFileById(fileId).getBlob().getDataAsString();
 }
 
 function moveToProcessed(fileId) {

@@ -12,15 +12,17 @@ function entryFieldText(entry) {
   return normalize(parts.join(' '));
 }
 
-function matchName(name, entries) {
+function matchName(name, entries, fileName) {
   name = name.toString().trim();
   if (!name || !entries || !entries.length) {
+    trace(fileName || '', 'name_match', 'ERROR', '"' + name + '" — no entries in lookup');
     return { matchedName: name, confidence: 0, status: 'not_found', candidates: [] };
   }
 
   var norm = normalize(name);
   var words = norm.split(/\s+/).filter(function (w) { return w.length > 0; });
   if (!words.length) {
+    trace(fileName || '', 'name_match', 'ERROR', '"' + name + '" — empty after normalization');
     return { matchedName: name, confidence: 0, status: 'not_found', candidates: [] };
   }
 
@@ -50,6 +52,7 @@ function matchName(name, entries) {
   }
 
   if (candidates.length === 0) {
+    trace(fileName || '', 'name_match', 'WARN', '"' + name + '" — not found in lookup');
     return { matchedName: name, confidence: 0, status: 'not_found', candidates: [] };
   }
 
@@ -64,6 +67,7 @@ function matchName(name, entries) {
   candidates = unique;
 
   if (candidates.length === 1) {
+    trace(fileName || '', 'name_match', 'INFO', '"' + name + '" → "' + candidates[0].combined_name + '"', { status: 'auto', confidence: 100 });
     return {
       matchedName: candidates[0].combined_name,
       confidence: 100,
@@ -72,6 +76,7 @@ function matchName(name, entries) {
     };
   }
 
+  trace(fileName || '', 'name_match', 'WARN', '"' + name + '" — ' + candidates.length + ' candidates', { status: 'review', candidates_count: candidates.length, candidates: candidates.map(function (e) { return e.combined_name; }) });
   return {
     matchedName: name,
     confidence: 50,

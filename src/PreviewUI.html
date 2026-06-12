@@ -22,6 +22,7 @@
     .badge-auto { background: #e6f4ea; color: #137333; }
     .badge-review { background: #fef7e0; color: #b06000; }
     .badge-error { background: #fce8e6; color: #c5221f; }
+    .badge-duplicate { background: #fce8e6; color: #b06000; }
     .preview-table { width: 100%; border-collapse: collapse; margin-top: 12px; }
     .preview-table th { background: #f8f9fa; text-align: left; padding: 8px; font-size: 12px; font-weight: 600; color: #555; border-bottom: 2px solid #ddd; }
     .preview-table td { padding: 6px 8px; border-bottom: 1px solid #eee; font-size: 13px; vertical-align: middle; }
@@ -35,7 +36,11 @@
     .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
     .summary { background: #e8f0fe; border-radius: 8px; padding: 12px; margin-bottom: 12px; font-size: 13px; }
     .summary strong { color: #1a73e8; }
+    .warning-bar { background: #fef7e0; border: 1px solid #f9d849; border-radius: 8px; padding: 12px; margin-bottom: 12px; font-size: 13px; color: #b06000; }
     .error-text { color: #c5221f; font-size: 12px; margin-top: 4px; }
+    .bulk-bar { margin: 8px 0; padding: 8px 12px; background: #f0f4ff; border-radius: 6px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+    .bulk-bar input { padding: 4px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; width: 200px; }
+    .bulk-bar button { padding: 4px 12px; background: #1a73e8; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
     .hidden { display: none; }
   </style>
 </head>
@@ -58,6 +63,7 @@
   </div>
 
   <div id="step-preview" class="hidden">
+    <div id="duplicate-warning" class="warning-bar hidden"></div>
     <div class="summary" id="summary-bar"></div>
     <div id="preview-container"></div>
     <div class="toolbar" style="margin-top:16px;">
@@ -169,8 +175,8 @@
       document.getElementById('preview-container').appendChild(section);
 
       google.script.run
-        .withSuccessHandler(function(records) {
-          results[f.name] = { records: records, file: f };
+        .withSuccessHandler(function(result) {
+          results[f.name] = { records: result.records, file: f, duplicates: result.duplicates || [] };
           parseNextFile(files, index + 1, results);
         })
         .withFailureHandler(function(err) {
@@ -188,8 +194,32 @@
       var totalAuto = 0;
       var totalReview = 0;
       var totalError = 0;
+      var totalDuplicates = 0;
 
       var fileNames = Object.keys(results);
+
+      // Build shared datalist for autocomplete name fields
+      var datalistHtml = '<datalist id="names-datalist">';
+      for (var l = 0; l < allLookup.length; l++) {
+        datalistHtml += '<option value="' + escapeAttr(allLookup[l].combined_name) + '">';
+      }
+      var addedOrig = {};
+      for (var l = 0; l < allLookup.length; l++) {
+        addedOrig[allLookup[l].combined_name.toLowerCase()] = true;
+      }
+      for (var fi = 0; fi < fileNames.length; fi++) {
+        var recs = results[fileNames[fi]].records || [];
+        for (var r = 0; r < recs.length; r++) {
+          var on = (recs[r].volunteer_name || '').trim();
+          if (on && !addedOrig[on.toLowerCase()]) {
+            datalistHtml += '<option value="' + escapeAttr(on) + '">';
+            addedOrig[on.toLowerCase()] = true;
+          }
+        }
+      }
+      datalistHtml += '</datalist>';
+      container.insertAdjacentHTML('afterbegin', datalistHtml);
+
       for (var fi = 0; fi < fileNames.length; fi++) {
         var fn = fileNames[fi];
         var data = results[fn];
@@ -199,8 +229,11 @@
           totalError++;
         }
 
+        totalDuplicates += (data.duplicates || []).length;
+
         var sec = document.createElement('div');
         sec.className = 'file-section';
+        sec.id = 'section-' + fi;
 
         var autoCount = 0, reviewCount = 0, notFoundCount = 0;
         for (var r = 0; r < records.length; r++) {
@@ -222,40 +255,45 @@
         if (data.error) {
           html += '<div class="error-text">' + escapeAttr(data.error) + '</div>';
         } else if (records.length) {
+          var missingEvent = false, missingDate = false;
+          var eventCounts = {}, dateCounts = {};
+          for (var r = 0; r < records.length; r++) {
+            if (!records[r].event_name) missingEvent = true;
+            if (!records[r].date) missingDate = true;
+            var ev = (records[r].event_name || '').trim();
+            if (ev) eventCounts[ev] = (eventCounts[ev] || 0) + 1;
+            var dt = (records[r].date || '').trim();
+            if (dt) dateCounts[dt] = (dateCounts[dt] || 0) + 1;
+          }
+
+          if (missingEvent || missingDate) {
+            var commonEvent = '', commonDate = '';
+            var maxEvent = 0, maxDate = 0;
+            for (var k in eventCounts) { if (eventCounts[k] > maxEvent) { maxEvent = eventCounts[k]; commonEvent = k; } }
+            for (var k in dateCounts) { if (dateCounts[k] > maxDate) { maxDate = dateCounts[k]; commonDate = k; } }
+            if (maxEvent < 2) commonEvent = '';
+            if (maxDate < 2) commonDate = '';
+
+            html += '<div class="bulk-bar">';
+            if (missingEvent) {
+              html += 'Event name: <input type="text" id="event_bulk_' + fi + '" value="' + escapeAttr(commonEvent) + '"> ' +
+                      '<button onclick="fillBulk(' + fi + ', \'event\')">Fill All</button>';
+            }
+            if (missingDate) {
+              html += 'Date: <input type="text" id="date_bulk_' + fi + '" value="' + escapeAttr(commonDate) + '"> ' +
+                      '<button onclick="fillBulk(' + fi + ', \'date\')">Fill All</button>';
+            }
+            html += '</div>';
+          }
+
           html += '<table class="preview-table">' +
                   '<thead><tr><th>Date</th><th>Event</th><th>Volunteer Name</th><th>Hours</th><th>Status</th></tr></thead><tbody>';
 
           for (var r = 0; r < records.length; r++) {
             var rec = records[r];
             var rowId = 'r_' + fi + '_' + r;
-            var candidates = rec.match_candidates || [];
-            var nameCell = '';
-
-            if (candidates.length > 1) {
-              nameCell = '<select id="' + rowId + '_name" class="name-sel" data-fi="' + fi + '" data-row="' + r + '">';
-              for (var c = 0; c < candidates.length; c++) {
-                var sel = candidates[c] === rec.matched_name ? ' selected' : '';
-                nameCell += '<option value="' + escapeAttr(candidates[c]) + '"' + sel + '>' + escapeAttr(candidates[c]) + '</option>';
-              }
-              var hasOrig = false;
-              for (var c = 0; c < candidates.length; c++) {
-                if (candidates[c] === rec.volunteer_name) hasOrig = true;
-              }
-              if (!hasOrig) {
-                nameCell += '<option value="' + escapeAttr(rec.volunteer_name) + '">' + escapeAttr(rec.volunteer_name) + ' (original)</option>';
-              }
-              nameCell += '</select>';
-            } else if (candidates.length === 1) {
-              nameCell = '<input type="text" id="' + rowId + '_name" class="name-inp" data-fi="' + fi + '" data-row="' + r + '" value="' + escapeAttr(rec.matched_name) + '">';
-            } else {
-              nameCell = '<select id="' + rowId + '_name" class="name-sel" data-fi="' + fi + '" data-row="' + r + '">';
-              nameCell += '<option value="">\u2014 Select \u2014</option>';
-              for (var l = 0; l < allLookup.length; l++) {
-                nameCell += '<option value="' + escapeAttr(allLookup[l].combined_name) + '">' + escapeAttr(allLookup[l].combined_name) + '</option>';
-              }
-              nameCell += '<option value="' + escapeAttr(rec.volunteer_name) + '">' + escapeAttr(rec.volunteer_name) + ' (original)</option>';
-              nameCell += '</select>';
-            }
+            var matched = rec.matched_name || rec.volunteer_name;
+            var nameCell = '<input type="text" id="' + rowId + '_name" class="name-inp" list="names-datalist" data-fi="' + fi + '" data-row="' + r + '" value="' + escapeAttr(matched) + '" autocomplete="off">';
 
             var badge = rec.match_status === 'auto'
               ? '<span class="status-badge badge-auto">&#10003;</span>'
@@ -273,7 +311,7 @@
           }
           html += '</tbody></table>';
         } else {
-          html += '<div style="color:#888;font-size:13px;">No records extracted from this file.</div>';
+          html += '<div style="color:#888;font-size:13px;padding:8px 4px;">No records extracted from this file. Check the <strong>_Log</strong> tab in the spreadsheet to see what Gemini returned.</div>';
         }
 
         sec.innerHTML = html;
@@ -288,7 +326,25 @@
       if (totalError) parts.push('<span style="color:#c5221f;">' + totalError + ' file errors</span>');
       summary.innerHTML = parts.join(' \u00b7 ');
 
+      var dw = document.getElementById('duplicate-warning');
+      if (totalDuplicates > 0) {
+        dw.innerHTML = '&#9888; <strong>' + totalDuplicates + ' record(s)</strong> match existing entries with the same date and event name. Please verify before saving.';
+        dw.classList.remove('hidden');
+      } else {
+        dw.classList.add('hidden');
+      }
+
       processedData = results;
+    }
+
+    function fillBulk(fi, field) {
+      var val = document.getElementById(field + '_bulk_' + fi).value;
+      var section = document.getElementById('section-' + fi);
+      if (!section) return;
+      var inputs = section.querySelectorAll('.' + field + '-inp');
+      for (var i = 0; i < inputs.length; i++) {
+        inputs[i].value = val;
+      }
     }
 
     function backToSelect() {
@@ -305,66 +361,161 @@
         .getFilesForPicker();
     }
 
+    var savedFiles = {};
+    var saveFileNames = [];
+    var saveTotalWritten = 0;
+    var saveErrors = [];
+
     function confirmAll() {
       var btn = document.getElementById('btn-confirm');
       btn.disabled = true;
       btn.textContent = 'Saving...';
 
-      var fileNames = Object.keys(processedData);
-      var totalWritten = 0;
-      var errors = [];
-
-      function saveNextFile(idx) {
-        if (idx >= fileNames.length) {
-          document.getElementById('step-preview').classList.add('hidden');
-          document.getElementById('step-done').classList.remove('hidden');
-          var detail = totalWritten + ' records written';
-          if (errors.length) detail += ', ' + errors.length + ' file(s) had errors';
-          document.getElementById('done-msg').textContent = 'Saved successfully!';
-          document.getElementById('done-detail').textContent = detail;
-          return;
-        }
-
-        var fn = fileNames[idx];
-        var data = processedData[fn];
-        if (data.error || !data.records.length) {
-          saveNextFile(idx + 1);
-          return;
-        }
-
-        var records = [];
-        for (var r = 0; r < data.records.length; r++) {
-          var fi = fileNames.indexOf(fn);
-          var dateEl = document.getElementById('r_' + fi + '_' + r + '_date');
-          var eventEl = document.getElementById('r_' + fi + '_' + r + '_event');
-          var nameSel = document.getElementById('r_' + fi + '_' + r + '_name');
-          var hoursEl = document.getElementById('r_' + fi + '_' + r + '_hours');
-
-          records.push({
-            date: dateEl ? dateEl.value : data.records[r].date,
-            event_name: eventEl ? eventEl.value : data.records[r].event_name,
-            volunteer_name: nameSel ? nameSel.value : data.records[r].volunteer_name,
-            hours: parseFloat(hoursEl ? hoursEl.value : data.records[r].hours) || 0,
-          });
-        }
-
-        google.script.run
-          .withSuccessHandler(function(result) {
-            if (result.success) {
-              totalWritten += result.records_written;
-            } else {
-              errors.push(fn + ': ' + result.error);
-            }
-            saveNextFile(idx + 1);
-          })
-          .withFailureHandler(function(err) {
-            errors.push(fn + ': ' + err);
-            saveNextFile(idx + 1);
-          })
-          .confirmRecords(fn, records);
-      }
+      savedFiles = {};
+      saveFileNames = Object.keys(processedData);
+      saveTotalWritten = 0;
+      saveErrors = [];
 
       saveNextFile(0);
+    }
+
+    function saveNextFile(idx) {
+      var btn = document.getElementById('btn-confirm');
+      if (idx >= saveFileNames.length) {
+        document.getElementById('step-preview').classList.add('hidden');
+        document.getElementById('step-done').classList.remove('hidden');
+        var detail = saveTotalWritten + ' records written';
+        if (saveErrors.length) {
+          document.getElementById('done-msg').textContent = 'Saved with warnings';
+          detail += '<br><span style="color:#c5221f;font-size:13px;">' + saveErrors.length + ' warning(s):<br>' + saveErrors.join('<br>') + '</span>';
+        } else {
+          document.getElementById('done-msg').textContent = 'Saved successfully!';
+        }
+        document.getElementById('done-detail').innerHTML = detail;
+        btn.disabled = false;
+        btn.textContent = 'Confirm & Save';
+        return;
+      }
+
+      var fn = saveFileNames[idx];
+      if (savedFiles[fn]) {
+        saveNextFile(idx + 1);
+        return;
+      }
+
+      var data = processedData[fn];
+      if (data.error || !data.records.length) {
+        saveNextFile(idx + 1);
+        return;
+      }
+
+      btn.textContent = 'Saving (' + (idx + 1) + '/' + saveFileNames.length + '): ' + fn;
+
+      var records = [];
+      for (var r = 0; r < data.records.length; r++) {
+        var dateEl = document.getElementById('r_' + idx + '_' + r + '_date');
+        var eventEl = document.getElementById('r_' + idx + '_' + r + '_event');
+        var nameSel = document.getElementById('r_' + idx + '_' + r + '_name');
+        var hoursEl = document.getElementById('r_' + idx + '_' + r + '_hours');
+
+        records.push({
+          date: dateEl ? dateEl.value : data.records[r].date,
+          event_name: eventEl ? eventEl.value : data.records[r].event_name,
+          volunteer_name: nameSel ? nameSel.value : data.records[r].volunteer_name,
+          hours: parseFloat(hoursEl ? hoursEl.value : data.records[r].hours) || 0,
+        });
+      }
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result.success) {
+            savedFiles[fn] = true;
+            saveTotalWritten += result.records_written;
+            if (result.move_warning) {
+              saveErrors.push(fn + ': ' + result.move_warning);
+            }
+            saveNextFile(idx + 1);
+          } else {
+            showSaveError(idx, fn, result.error);
+          }
+        })
+        .withFailureHandler(function(err) {
+          showSaveError(idx, fn, err.toString());
+        })
+        .confirmRecords(data.file.id, fn, records, false);
+    }
+
+    function showSaveError(fi, fn, errorMsg) {
+      var btn = document.getElementById('btn-confirm');
+      btn.disabled = false;
+      btn.textContent = 'Confirm & Save';
+
+      var section = document.getElementById('section-' + fi);
+      if (!section) return;
+
+      var oldBar = document.getElementById('error-bar-' + fi);
+      if (oldBar) oldBar.remove();
+
+      var errorBar = document.createElement('div');
+      errorBar.id = 'error-bar-' + fi;
+      errorBar.className = 'warning-bar';
+      errorBar.style.cssText = 'background:#fce8e6;border-color:#c5221f;color:#c5221f;';
+      errorBar.innerHTML = '<strong>' + escapeAttr(errorMsg) + '</strong><br><br>' +
+        '<button class="btn btn-secondary" onclick="dismissSaveError(' + fi + ')">Go back & edit</button> ' +
+        '<button class="btn btn-danger" onclick="saveWithForce(' + fi + ')">Save with missing data anyway</button>';
+      section.insertBefore(errorBar, section.firstChild);
+    }
+
+    function dismissSaveError(fi) {
+      var bar = document.getElementById('error-bar-' + fi);
+      if (bar) bar.remove();
+    }
+
+    function saveWithForce(fi) {
+      var fn = saveFileNames[fi];
+      if (!fn) return;
+
+      var btn = document.getElementById('btn-confirm');
+      btn.disabled = true;
+      btn.textContent = 'Saving (force)...';
+
+      dismissSaveError(fi);
+
+      var data = processedData[fn];
+      if (!data) return;
+
+      var records = [];
+      for (var r = 0; r < data.records.length; r++) {
+        var dateEl = document.getElementById('r_' + fi + '_' + r + '_date');
+        var eventEl = document.getElementById('r_' + fi + '_' + r + '_event');
+        var nameSel = document.getElementById('r_' + fi + '_' + r + '_name');
+        var hoursEl = document.getElementById('r_' + fi + '_' + r + '_hours');
+        records.push({
+          date: dateEl ? dateEl.value : data.records[r].date,
+          event_name: eventEl ? eventEl.value : data.records[r].event_name,
+          volunteer_name: nameSel ? nameSel.value : data.records[r].volunteer_name,
+          hours: parseFloat(hoursEl ? hoursEl.value : data.records[r].hours) || 0,
+        });
+      }
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result.success) {
+            savedFiles[fn] = true;
+            saveTotalWritten += result.records_written;
+            if (result.move_warning) {
+              saveErrors.push(fn + ': ' + result.move_warning);
+            }
+          } else {
+            saveErrors.push(fn + ': ' + result.error);
+          }
+          saveNextFile(fi + 1);
+        })
+        .withFailureHandler(function(err) {
+          saveErrors.push(fn + ': ' + err);
+          saveNextFile(fi + 1);
+        })
+        .confirmRecords(data.file.id, fn, records, true);
     }
   </script>
 </body>
