@@ -106,7 +106,8 @@ clasp push
 | File type | Calls per file | Method |
 |-----------|---------------|--------|
 | JPEG / PNG | 1 | inline_data (base64) |
-| Excel (.xlsx/.xls/.csv) | 1 | Convert to PDF inline |
+| Excel (.xlsx/.xls) | 1 | Convert to Sheets, extract as text |
+| CSV | 1 | Read raw text directly |
 
 ~4 API calls per month (2 JPEG + 2 Excel) — well within Gemini free tier.
 

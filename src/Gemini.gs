@@ -43,12 +43,14 @@ function parseFile(fileId, fileName) {
       { inline_data: { mime_type: mime, data: base64 } },
       { text: 'Extract all volunteer records from this file as a JSON array.' },
     ];
+  } else if (isCsvFile(fileName)) {
+    var textData = readCsvAsText(fileId, fileName);
+    parts = [{ text: 'Here is the content of a CSV file:\n\n' + textData + '\n\nExtract all volunteer records from this data as a JSON array.' }];
   } else if (isExcelFile(fileName)) {
     var textData = readExcelAsText(fileId, fileName);
     parts = [{ text: 'Here is the content of an Excel spreadsheet:\n\n' + textData + '\n\nExtract all volunteer records from this data as a JSON array.' }];
   } else {
-    var textData = readCsvAsText(fileId, fileName);
-    parts = [{ text: 'Here is the content of a CSV file:\n\n' + textData + '\n\nExtract all volunteer records from this data as a JSON array.' }];
+    throw new Error('Unsupported file type: ' + fileName);
   }
 
   var body = {

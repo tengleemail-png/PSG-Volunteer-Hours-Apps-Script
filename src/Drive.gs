@@ -74,5 +74,9 @@ function isImageFile(fileName) {
 
 function isExcelFile(fileName) {
   var n = fileName.toLowerCase();
-  return n.endsWith('.xlsx') || n.endsWith('.xls') || n.endsWith('.csv');
+  return n.endsWith('.xlsx') || n.endsWith('.xls');
+}
+
+function isCsvFile(fileName) {
+  return fileName.toLowerCase().endsWith('.csv');
 }
